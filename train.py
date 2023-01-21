@@ -387,8 +387,10 @@ def main(args):
         """
         generates a single sample at a given cfg scale and saves it to disk
         """       
+        prompt,negative_prompt = prompt.split('|',1) if '|' in prompt else (prompt,"")
         with torch.no_grad(), autocast():
             image = pipe(prompt,
+                    negative_prompt=negative_prompt,
                     num_inference_steps=30,
                     num_images_per_prompt=1,
                     guidance_scale=cfg,
