@@ -214,24 +214,18 @@ class ImageCaption:
         :return: `ImageCaption` object or `None`.
         """
         if os.path.exists(file_path):
-            (file_path_without_ext, ext) = os.path.splitext(file_path) 
-            match ext:
-                case ".yaml" | ".yml":
-                    return ImageCaption.from_yaml_file(file_path, default_caption)
-                
-                case ".txt" | ".caption":
-                    return ImageCaption.from_text_file(file_path, default_caption)
-                
-                case '.jpg'| '.jpeg'| '.png'| '.bmp'| '.webp'| '.jfif':
-                    for ext in [".yaml", ".yml", ".txt", ".caption"]:
-                        file_path = file_path_without_ext + ext
-                        image_caption = ImageCaption.from_file(file_path)
-                        if image_caption is not None:
-                            return image_caption
-                    return ImageCaption.from_file_name(file_path)
-
-                case _:
-                    return default_caption
+            (file_path_without_ext, ext) = os.path.splitext(file_path)
+            if ext is ".yaml" | ".yml":
+                return ImageCaption.from_yaml_file(file_path, default_caption)
+            elif ext is ".txt" | ".caption":
+                return ImageCaption.from_text_file(file_path, default_caption)
+            elif ext is '.jpg'| '.jpeg'| '.png'| '.bmp'| '.webp'| '.jfif':
+                for ext in [".yaml", ".yml", ".txt", ".caption"]:
+                    file_path = file_path_without_ext + ext
+                    image_caption = ImageCaption.from_file(file_path)
+                    if image_caption is not None:
+                        return image_caption
+                return default_caption 
         else:
             return default_caption
         
