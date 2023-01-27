@@ -214,14 +214,13 @@ def resolve(value: typing.Union[dict, str], aspects: list[float], flip_p: float=
     
     if isinstance(value, dict):
         resolver = value.get('resolver', None)
-        match resolver:
-            case 'directory' | 'json':
-                path = value.get('path', None)
-                return resolve_root(path, aspects, flip_p, seed)
-            case 'multi':
-                items = []
-                for resolver in value.get('resolvers', []):
-                    items += resolve(resolver, aspects, flip_p, seed)
-                return items
-            case _:
-                raise ValueError(f"Cannot resolve training data for resolver value '{resolver}'")
+        if 'directory' in resolver or 'json' in resolver:
+            path = value.get('path', None)
+            return resolve_root(path, aspects, flip_p, seed)
+        elif 'multi' in resolver:
+            items = []
+            for resolver in value.get('resolvers', []):
+                items += resolve(resolver, aspects, flip_p, seed)
+            return items
+        else:
+            raise ValueError(f"Cannot resolve training data for resolver value '{resolver}'")
