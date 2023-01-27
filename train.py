@@ -425,7 +425,7 @@ def main(args):
                 #logging.warning("empty prompt in sample prompts, check your prompts file")
                 continue
             images = []
-            for cfg in [7.0, 4.0, 1.01]:
+            for cfg in [7.0, 4.0]:
                 image = __generate_sample(pipe, prompt, cfg, resolution=resolution, gen=gen)
                 images.append(image)
 
