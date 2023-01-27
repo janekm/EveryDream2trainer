@@ -215,11 +215,11 @@ class ImageCaption:
         """
         if os.path.exists(file_path):
             (file_path_without_ext, ext) = os.path.splitext(file_path)
-            if ext is ".yaml" | ".yml":
+            if ext in [".yaml" ,".yml"]:
                 return ImageCaption.from_yaml_file(file_path, default_caption)
-            elif ext is ".txt" | ".caption":
+            elif ext in [".txt" , ".caption"]:
                 return ImageCaption.from_text_file(file_path, default_caption)
-            elif ext is '.jpg'| '.jpeg'| '.png'| '.bmp'| '.webp'| '.jfif':
+            elif ext in ['.jpg', '.jpeg', '.png', '.bmp', '.webp', '.jfif']:
                 for ext in [".yaml", ".yml", ".txt", ".caption"]:
                     file_path = file_path_without_ext + ext
                     image_caption = ImageCaption.from_file(file_path)
