@@ -14,17 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 import bisect
-import math
-import os
 import logging
+import os.path
+from collections import defaultdict
+import math
 import copy
 
 import random
 from data.image_train_item import ImageTrainItem
-import data.aspects as aspects
-import data.resolver as resolver
-from colorama import Fore, Style
-import PIL
+import PIL.Image
 
 PIL.Image.MAX_IMAGE_PIXELS = 715827880*4 # increase decompression bomb error limit to 4x default
 
@@ -32,68 +30,65 @@ class DataLoaderMultiAspect():
     """
     Data loader for multi-aspect-ratio training and bucketing
 
-    data_root: root folder of training data
+    image_train_items: list of `ImageTrainItem` objects
+    seed: random seed
     batch_size: number of images per batch
-    flip_p: probability of flipping image horizontally (i.e. 0-0.5)
     """
-    def __init__(self, data_root, seed=555, debug_level=0, batch_size=1, flip_p=0.0, resolution=512, log_folder=None):
-        self.data_root = data_root
-        self.debug_level = debug_level
-        self.flip_p = flip_p
-        self.log_folder = log_folder
+    def __init__(self, image_train_items: list[ImageTrainItem], seed=555, batch_size=1):
         self.seed = seed
         self.batch_size = batch_size
-        self.has_scanned = False
-        self.aspects = aspects.get_aspect_buckets(resolution=resolution, square_only=False)
-        
-        logging.info(f"* DLMA resolution {resolution}, buckets: {self.aspects}")
-        self.__prepare_train_data()
-        (self.rating_overall_sum, self.ratings_summed) = self.__sort_and_precalc_image_ratings()
+        self.prepared_train_data = image_train_items
+        random.Random(self.seed).shuffle(self.prepared_train_data)
+        self.prepared_train_data = sorted(self.prepared_train_data, key=lambda img: img.caption.rating())
+        self.expected_epoch_size = math.floor(sum([i.multiplier for i in self.prepared_train_data]))
+        if self.expected_epoch_size != len(self.prepared_train_data):
+            logging.info(f" * DLMA initialized with {len(image_train_items)} source images. After applying multipliers, each epoch will train on at least {self.expected_epoch_size} images.")
+        else:
+            logging.info(f" * DLMA initialized with {len(image_train_items)} images.")
+
+        self.rating_overall_sum: float = 0.0
+        self.ratings_summed: list[float] = []
+        self.__update_rating_sums()
 
 
-    def __pick_multiplied_set(self, randomizer):
+    def __pick_multiplied_set(self, randomizer: random.Random):
         """
         Deals with multiply.txt whole and fractional numbers
         """
-        #print(f"Picking multiplied set from {len(self.prepared_train_data)}")
-        data_copy = copy.deepcopy(self.prepared_train_data) # deep copy to avoid modifying original multiplier property
-        epoch_size = len(self.prepared_train_data)
         picked_images = []
-
-        # add by whole number part first and decrement multiplier in copy
+        data_copy = copy.deepcopy(self.prepared_train_data) # deep copy to avoid modifying original multiplier property
         for iti in data_copy:
-            #print(f"check for whole number {iti.multiplier}: {iti.pathname}, remaining {iti.multiplier}")
-            while iti.multiplier >= 1.0:
+            while iti.multiplier >= 1:
                 picked_images.append(iti)
-                #print(f"Adding {iti.multiplier}: {iti.pathname}, remaining {iti.multiplier}, , datalen: {len(picked_images)}")
-                iti.multiplier -= 1.0
+                iti.multiplier -= 1
 
-        remaining = epoch_size - len(picked_images)
+        remaining = self.expected_epoch_size - len(picked_images)
 
         assert remaining >= 0, "Something went wrong with the multiplier calculation"
 
-        # add by remaining fractional numbers by random chance
+        # resolve fractional parts, ensure each is only added max once
         while remaining > 0:
             for iti in data_copy:
-                if randomizer.uniform(0.0, 1.0) < iti.multiplier:
-                    #print(f"Adding {iti.multiplier}: {iti.pathname}, remaining {remaining}, datalen: {len(data_copy)}")
+                if randomizer.random() < iti.multiplier:
                     picked_images.append(iti)
+                    iti.multiplier = 0
                     remaining -= 1
-                    iti.multiplier = 0.0
-                if remaining <= 0:
-                    break
+                    if remaining <= 0:
+                        break
         
-        del data_copy
         return picked_images
 
-    def get_shuffled_image_buckets(self, dropout_fraction: float = 1.0):
+    def get_shuffled_image_buckets(self, dropout_fraction: float = 1.0) -> list[ImageTrainItem]:
         """
-        returns the current list of images including their captions in a randomized order,
-        sorted into buckets with same sized images
-        if dropout_fraction < 1.0, only a subset of the images will be returned
-        if dropout_fraction >= 1.0, repicks fractional multipliers based on folder/multiply.txt values swept at prescan
+        Returns the current list of `ImageTrainItem` in randomized order,
+        sorted into buckets with same sized images.
+        
+        If dropout_fraction < 1.0, only a subset of the images will be returned.
+        
+        If dropout_fraction >= 1.0, repicks fractional multipliers based on folder/multiply.txt values swept at prescan.
+        
         :param dropout_fraction: must be between 0.0 and 1.0.
-        :return: randomized list of (image, caption) pairs, sorted into same sized buckets
+        :return: Randomized list of `ImageTrainItem` objects
         """
 
         self.seed += 1
@@ -116,75 +111,26 @@ class DataLoaderMultiAspect():
                 buckets[(target_wh[0],target_wh[1])] = []
             buckets[(target_wh[0],target_wh[1])].append(image_caption_pair)
 
-        if len(buckets) > 1:
-            for bucket in buckets:
-                truncate_count = len(buckets[bucket]) % batch_size
-                if truncate_count > 0:
-                    runt_bucket = buckets[bucket][-truncate_count:]
-                    for item in runt_bucket:
-                        item.runt_size = truncate_count
-                    while len(runt_bucket) < batch_size:
-                        runt_bucket.append(random.choice(runt_bucket))
+        for bucket in buckets:
+            truncate_count = len(buckets[bucket]) % batch_size
+            if truncate_count > 0:
+                runt_bucket = buckets[bucket][-truncate_count:]
+                for item in runt_bucket:
+                    item.runt_size = truncate_count
+                while len(runt_bucket) < batch_size:
+                    runt_bucket.append(random.choice(runt_bucket))
 
-                    current_bucket_size = len(buckets[bucket])
+                current_bucket_size = len(buckets[bucket])
 
-                    buckets[bucket] = buckets[bucket][:current_bucket_size - truncate_count]
-                    buckets[bucket].extend(runt_bucket)
+                buckets[bucket] = buckets[bucket][:current_bucket_size - truncate_count]
+                buckets[bucket].extend(runt_bucket)
 
         # flatten the buckets
-        image_caption_pairs = []
+        items: list[ImageTrainItem] = []
         for bucket in buckets:
-            image_caption_pairs.extend(buckets[bucket])
+            items.extend(buckets[bucket])
 
-        return image_caption_pairs
-
-    def __sort_and_precalc_image_ratings(self) -> tuple[float, list[float]]:
-        self.prepared_train_data = sorted(self.prepared_train_data, key=lambda img: img.caption.rating())
-
-        rating_overall_sum: float = 0.0
-        ratings_summed: list[float] = []
-        for image in self.prepared_train_data:
-            rating_overall_sum += image.caption.rating()
-            ratings_summed.append(rating_overall_sum)
-
-        return rating_overall_sum, ratings_summed
-
-    def __prepare_train_data(self, flip_p=0.0) -> list[ImageTrainItem]:
-        """
-        Create ImageTrainItem objects with metadata for hydration later
-        """
-
-        if not self.has_scanned:
-            self.has_scanned = True
-            
-            logging.info(" Preloading images...")
-            
-            items = resolver.resolve(self.data_root, self.aspects, flip_p=flip_p, seed=self.seed)
-            image_paths = set(map(lambda item: item.pathname, items))
-
-            print (f" * DLMA: {len(items)} images loaded from {len(image_paths)} files")
-            
-            self.prepared_train_data = [item for item in items if item.error is None]
-            random.Random(self.seed).shuffle(self.prepared_train_data)
-            self.__report_errors(items)
-    
-    def __report_errors(self, items: list[ImageTrainItem]):
-        for item in items:
-            if item.error is not None:
-                logging.error(f"{Fore.LIGHTRED_EX} *** Error opening {Fore.LIGHTYELLOW_EX}{item.pathname}{Fore.LIGHTRED_EX} to get metadata. File may be corrupt and will be skipped.{Style.RESET_ALL}")
-                logging.error(f" *** exception: {item.error}")
-        
-        undersized_items = [item for item in items if item.is_undersized]
-
-        if len(undersized_items) > 0:
-            underized_log_path = os.path.join(self.log_folder, "undersized_images.txt")
-            logging.warning(f"{Fore.LIGHTRED_EX} ** Some images are smaller than the target size, consider using larger images{Style.RESET_ALL}")
-            logging.warning(f"{Fore.LIGHTRED_EX} ** Check {underized_log_path} for more information.{Style.RESET_ALL}")
-            with open(underized_log_path, "w") as undersized_images_file:
-                undersized_images_file.write(f" The following images are smaller than the target size, consider removing or sourcing a larger copy:")
-                for undersized_item in undersized_items:
-                    message = f" *** {undersized_item.pathname} with size: {undersized_item.image_size} is smaller than target size: {undersized_item.target_wh}\n"
-                    undersized_images_file.write(message)
+        return items
 
     def __pick_random_subset(self, dropout_fraction: float, picker: random.Random) -> list[ImageTrainItem]:
         """
@@ -222,3 +168,10 @@ class DataLoaderMultiAspect():
             prepared_train_data.pop(pos)
 
         return picked_images
+
+    def __update_rating_sums(self):        
+        self.rating_overall_sum: float = 0.0
+        self.ratings_summed: list[float] = []
+        for item in self.prepared_train_data:
+            self.rating_overall_sum += item.caption.rating()
+            self.ratings_summed.append(self.rating_overall_sum)
